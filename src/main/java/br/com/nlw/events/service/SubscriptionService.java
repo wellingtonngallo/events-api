@@ -1,6 +1,7 @@
 package br.com.nlw.events.service;
 
 import java.util.List;
+import java.util.Optional;
 import java.util.stream.IntStream;
 
 import org.springframework.beans.factory.annotation.Autowired;
@@ -31,56 +32,58 @@ public class SubscriptionService {
   @Autowired
   private SubscriptionRepository subscriptionRepository;
 
-  public SubscriptionResponse createNewSubscription(String eventName, User user, Integer userId) {
-    Event evt = eventRepository.findByPrettyName(eventName);
-
-    if (evt == null) {
-      throw new EventNotFoundException("Evento " + eventName + " não existe");
-    }
-    
-    User userResponse = userRepository.findByEmail(user.getEmail());
-
-    if (userResponse == null) {
-      userResponse = userRepository.save(user);
-    }
-
-    User indicator = null;
-
-    if (userId != null) {
-      indicator = userRepository.findById(userId).orElse(null);
-
-      if (indicator == null) {
-        throw new UserIndicadorNotFoundException("Usuario indicador não encontrado");
-      }
-    }
- 
-    Subscription subs = new Subscription(); 
-
-    subs.setEvent(evt);
-    subs.setSubscriber(userResponse);
-    subs.setIndication(indicator);
-
-    Subscription tmpSubscription = subscriptionRepository.findByEventAndSubscriber(evt, userResponse);
-
-    if (tmpSubscription != null) {
-      throw new SubscriptionConflictException(" ja existe inscrição para o usuario " + userResponse.getEmail() + " no evento " + evt.getPrettyName());
-    }
-
-    Subscription result = subscriptionRepository.save(subs);
-
-    return new SubscriptionResponse(result.getSubscriptionNumber(), "http://codecraft.com/subscription/" + result.getEvent().getPrettyName() + "/" + result.getSubscriber().getId());
+  private Event findEventByPrettyName(String eventName) {
+    return Optional.ofNullable(eventRepository.findByPrettyName(eventName))
+      .orElseThrow(() -> new EventNotFoundException("Evento " + eventName + " não existe"));
   }
 
-  public List<SubscriptionRankingItem> getCompleteRanking(String prettyName) {
-    Event event = eventRepository.findByPrettyName((prettyName));
+  private User findOrCreateUser(User user) {
+    return Optional.ofNullable(userRepository.findByEmail(user.getEmail()))
+      .orElseGet(() -> userRepository.save(user));
+  }
 
-    if (event == null) {
-      throw new EventNotFoundException("Ranking do evento " + prettyName + "nao existe");
+  private Optional<User> findUserById(Integer userId) {
+    return Optional.ofNullable(userId)
+      .flatMap(id -> userRepository.findById(id));
+  }
+
+  private void checkSubscriptionConflict(Event event, User subscriber) {
+    if (subscriptionRepository.findByEventAndSubscriber(event, subscriber) != null) {
+      throw new SubscriptionConflictException("Já existe inscrição para o usuário " + subscriber.getEmail() + " no evento " + event.getPrettyName());
     }
+  }
+
+  private Subscription createSubscription(Event event, User subscriber, User indicator) {
+    Subscription subscription = new Subscription();
+
+    subscription.setEvent(event);
+    subscription.setSubscriber(subscriber);
+    subscription.setIndication(indicator);
+
+    return subscription;
+  }
+
+  public SubscriptionResponse createNewSubscription(String eventName, User user, Integer userId) {
+    Event event = findEventByPrettyName(eventName);
+    User subscriber = findOrCreateUser(user);
+    Optional<User> indicatorOpt = findUserById(userId);
+
+    checkSubscriptionConflict(event, subscriber);
+
+    Subscription subscription = createSubscription(event, subscriber, indicatorOpt.orElse(null));
+    Subscription savedSubscription = subscriptionRepository.save(subscription);
+
+    return new SubscriptionResponse(savedSubscription.getSubscriptionNumber(), 
+    "http://codecraft.com/subscription/" + savedSubscription.getEvent().getPrettyName() + "/" + savedSubscription.getSubscriber().getId());
+}
+
+  public List<SubscriptionRankingItem> getCompleteRanking(String prettyName) {
+    Event event = Optional.ofNullable(eventRepository.findByPrettyName(prettyName))
+        .orElseThrow(() -> new EventNotFoundException("Ranking do evento " + prettyName + " não existe"));
 
     return subscriptionRepository.generateRanking(event.getEventId());
   }
-  
+
   public SubscriptionRankingByUser getRankingByUser(String prettyName, Integer userId) {
     List<SubscriptionRankingItem> ranking = getCompleteRanking(prettyName);
 
@@ -89,14 +92,11 @@ public class SubscriptionService {
       .findFirst()
       .orElse(null);
 
-    if (item == null) {
-      throw new UserIndicadorNotFoundException("Nao ha inscricoes para desde usiario " + userId);
-    }
-
-    Integer posicao = IntStream.range(0, ranking.size())
+    Integer position = IntStream.range(0, ranking.size())
       .filter(pos -> ranking.get(pos).userId().equals(userId))
-      .findFirst().getAsInt();
+      .findFirst()
+      .orElseThrow(() -> new UserIndicadorNotFoundException("Não há inscrições para este usuário " + userId));
 
-    return new SubscriptionRankingByUser(item, posicao + 1);
+    return new SubscriptionRankingByUser(item, position + 1);
   }
 }
